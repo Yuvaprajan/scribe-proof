@@ -1,0 +1,38 @@
+{
+  "from_baseline": true,
+  "summary_rows": {
+    "A": {
+      "n": 5,
+      "mean_cer": 0.361684510289672,
+      "mean_wer": 0.6331262939958593,
+      "mean_exact_match": 0.0,
+      "mean_fce_rate": 0.6702380952380953,
+      "mean_fve_rate": 0.6702380952380953,
+      "mean_review_rate": 0.0,
+      "mean_coverage_accepted": 0.8952380952380953,
+      "mean_selective_risk": 0.34915819769224915
+    },
+    "C": {
+      "n": 5,
+      "mean_cer": 0.8963966383517732,
+      "mean_wer": 0.9840108401084011,
+      "mean_exact_match": 0.0,
+      "mean_fce_rate": 0.049523809523809526,
+      "mean_fve_rate": 0.14952380952380953,
+      "mean_review_rate": 0.1,
+      "mean_coverage_accepted": 0.049523809523809526,
+      "mean_selective_risk": 0.4404761904761905
+    },
+    "D": {
+      "n": 5,
+      "mean_cer": 0.36340101514404094,
+      "mean_wer": 0.6591661196115066,
+      "mean_exact_match": 0.0,
+      "mean_fce_rate": 0.5207142857142857,
+      "mean_fve_rate": 0.6702380952380953,
+      "mean_review_rate": 0.14952380952380953,
+      "mean_coverage_accepted": 0.7457142857142858,
+      "mean_selective_risk": 0.38854963493684225
+    }
+  }
+}

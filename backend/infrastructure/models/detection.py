@@ -106,10 +106,26 @@ class LineDetector:
         paddle = self._get_paddle()
         if paddle is not None:
             try:
-                return self._detect_paddle(image_bgr, paddle)
+                result = self._detect_paddle(image_bgr, paddle)
+                return self._sanitize(result, image_bgr)
             except Exception as e:
                 logger.warning("Paddle detection failed (%s); OpenCV fallback", e)
-        return self._detect_opencv(image_bgr)
+        return self._sanitize(self._detect_opencv(image_bgr), image_bgr)
+
+    def _sanitize(self, result: DetectionResult, image_bgr: np.ndarray) -> DetectionResult:
+        from infrastructure.models.bbox_validation import sanitize_detection_lines
+
+        before = len(result.lines)
+        result.lines = sanitize_detection_lines(result.lines, image_bgr)
+        result.lines = self._assign_reading_order(result.lines)
+        result.reading_order_edges = [(i, i + 1) for i in range(len(result.lines) - 1)]
+        result.settings = {
+            **(result.settings or {}),
+            "bbox_sanitized": True,
+            "lines_before_sanitize": before,
+            "lines_after_sanitize": len(result.lines),
+        }
+        return result
 
     def _poly_to_bbox(self, poly: list) -> BoundingBox:
         xs = [float(p[0]) for p in poly]
@@ -183,6 +199,7 @@ class LineDetector:
                 max(0, int(bbox.y)) : min(h, int(bbox.y + bbox.height)),
                 max(0, int(bbox.x)) : min(w, int(bbox.x + bbox.width)),
             ]
+            line_kind, kind_score = self._line_kind(crop)
             crossed, score = self._crossed_out_score(crop)
             script_mode, stroke_irreg = self._script_mode(crop, conf)
             region_type = self._classify_region(
@@ -213,6 +230,9 @@ class LineDetector:
                         "paddle_score": conf,
                         "script_mode": script_mode,
                         "stroke_irregularity": stroke_irreg,
+                        "line_geometry_kind": line_kind,
+                        "line_geometry_score": kind_score,
+                        "strike_uncertain": line_kind == "strike_uncertain",
                     },
                 )
             )
@@ -331,42 +351,112 @@ class LineDetector:
             return RegionType.PRINTED_TEXT
         return RegionType.MAIN_HANDWRITING
 
-    def _crossed_out_score(self, crop: np.ndarray) -> tuple[bool, float]:
+    def _line_kind(self, crop: np.ndarray) -> tuple[str, float]:
+        """Classify strokes: strike_through | strike_uncertain | underline | ruling | border | none."""
         if crop is None or crop.size == 0:
-            return False, 0.0
+            return "none", 0.0
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
         if gray.shape[0] < 8 or gray.shape[1] < 20:
-            return False, 0.0
+            return "none", 0.0
+        h, w = gray.shape[:2]
         edges = cv2.Canny(gray, 50, 150)
         lines = cv2.HoughLinesP(
             edges,
             1,
             np.pi / 180,
             threshold=30,
-            minLineLength=int(0.45 * gray.shape[1]),
+            minLineLength=int(0.40 * w),
             maxLineGap=8,
         )
         if lines is None:
-            return False, 0.0
+            return "none", 0.0
         ink = (gray < 180).astype(np.uint8)
         ink_pixels = max(int(ink.sum()), 1)
+        y_lo, y_hi = int(0.2 * h), int(0.8 * h)
+        text_band = ink[y_lo:y_hi, :]
+        text_pixels = max(int(text_band.sum()), 1)
+
+        strike_hits = 0
+        underline_hits = 0
+        ruling_hits = 0
+        border_hits = 0
         stroke_mask = np.zeros_like(gray)
-        long_strokes = 0
         for line in lines:
             x1, y1, x2, y2 = line[0]
-            length = np.hypot(x2 - x1, y2 - y1)
-            angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
-            if length >= 0.4 * gray.shape[1] and (
-                angle < 25 or 35 < angle < 55 or angle > 155
-            ):
-                long_strokes += 1
+            length = float(np.hypot(x2 - x1, y2 - y1))
+            angle = abs(float(np.degrees(np.arctan2(y2 - y1, x2 - x1))))
+            mid_y = 0.5 * (y1 + y2)
+            near_edge = mid_y < 0.12 * h or mid_y > 0.88 * h
+            spans_width = length >= 0.85 * w
+            diagonal = 25 < angle < 65 or 115 < angle < 155
+            near_horizontal = angle < 18 or angle > 162
+
+            if spans_width and near_horizontal and near_edge:
+                border_hits += 1
+                continue
+            if spans_width and near_horizontal and mid_y > 0.75 * h:
+                underline_hits += 1
+                continue
+            if spans_width and near_horizontal:
+                tmp = np.zeros_like(gray)
+                cv2.line(tmp, (x1, y1), (x2, y2), 255, 2)
+                inter = np.logical_and(tmp[y_lo:y_hi, :] > 0, text_band > 0).sum()
+                if inter / text_pixels < 0.04:
+                    ruling_hits += 1
+                    continue
+            crosses_text = y_lo <= mid_y <= y_hi
+            # Strike-through: prefer diagonal cancellation across ink.
+            # Near-horizontal mid lines are usually underlines/rulings, not strikes.
+            if length >= 0.35 * w and crosses_text and diagonal:
                 cv2.line(stroke_mask, (x1, y1), (x2, y2), 255, 2)
-        if long_strokes == 0:
-            return False, 0.0
-        intersection = np.logical_and(stroke_mask > 0, ink > 0).sum()
-        density = float(intersection) / float(ink_pixels)
-        score = min(1.0, 0.35 * long_strokes + 4.0 * density)
-        return score >= 0.55, score
+                strike_hits += 1
+            elif (
+                length >= 0.55 * w
+                and crosses_text
+                and near_horizontal
+                and not spans_width
+            ):
+                # Short-ish mid horizontal may be a pen strike; keep weak
+                cv2.line(stroke_mask, (x1, y1), (x2, y2), 255, 1)
+                strike_hits += 0  # do not count as strike without diagonal
+                underline_hits += 1
+
+        if strike_hits == 0 and underline_hits == 0 and ruling_hits == 0 and border_hits == 0:
+            return "none", 0.0
+
+        # Prefer form geometry over strike when page-width rulings/borders dominate
+        if (ruling_hits + border_hits + underline_hits) >= strike_hits and strike_hits <= 1:
+            if ruling_hits > 0:
+                return "ruling", 0.4
+            if border_hits > 0:
+                return "border", 0.4
+            if underline_hits > 0:
+                return "underline", 0.35
+
+        inter = np.logical_and(stroke_mask > 0, ink > 0).sum()
+        density = float(inter) / float(ink_pixels)
+        if strike_hits > 0 and density >= 0.03:
+            score = min(1.0, 0.4 * strike_hits + 3.5 * density)
+            if score >= 0.62 and strike_hits >= 1:
+                # Require clearer cancellation when horizontal form lines also present
+                if (ruling_hits + border_hits + underline_hits) > 0 and score < 0.85:
+                    return "strike_uncertain", score
+                return "strike_through", score
+            return "strike_uncertain", score
+        if ruling_hits > 0:
+            return "ruling", 0.4
+        if border_hits > 0:
+            return "border", 0.4
+        if underline_hits > 0:
+            return "underline", 0.35
+        return "none", 0.0
+
+    def _crossed_out_score(self, crop: np.ndarray) -> tuple[bool, float]:
+        kind, score = self._line_kind(crop)
+        if kind == "strike_through":
+            return True, score
+        # Uncertain / ruling / underline / border: do not mark crossed-out
+        return False, score if kind == "strike_uncertain" else 0.0
 
     def _assign_reading_order(self, lines: list[DetectedLine]) -> list[DetectedLine]:
         sorted_lines = sorted(

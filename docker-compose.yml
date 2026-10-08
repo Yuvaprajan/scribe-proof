@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       SCRIBEPROOF_DATA_DIR: /data
       SCRIBEPROOF_ARTIFACT_ROOT: /data/artifacts
@@ -14,9 +16,22 @@ services:
       SCRIBEPROOF_USE_PADDLE: ${SCRIBEPROOF_USE_PADDLE:-true}
       SCRIBEPROOF_WARMUP_MODELS: ${SCRIBEPROOF_WARMUP_MODELS:-true}
       SCRIBEPROOF_TROCR_MODEL: ${SCRIBEPROOF_TROCR_MODEL:-microsoft/trocr-large-handwritten}
-      SCRIBEPROOF_LINE_VARIANTS: ${SCRIBEPROOF_LINE_VARIANTS:-raw,clahe,adaptive_binarized,denoised}
+      SCRIBEPROOF_TROCR_DTYPE: ${SCRIBEPROOF_TROCR_DTYPE:-auto}
+      SCRIBEPROOF_LINE_VARIANTS: ${SCRIBEPROOF_LINE_VARIANTS:-clahe}
+      SCRIBEPROOF_ESCALATE_VARIANTS: ${SCRIBEPROOF_ESCALATE_VARIANTS:-raw,clahe,adaptive_binarized,denoised}
+      SCRIBEPROOF_PADDLE_OCR_VERSION: ${SCRIBEPROOF_PADDLE_OCR_VERSION:-PP-OCRv4}
+      SCRIBEPROOF_PADDLE_LANG: ${SCRIBEPROOF_PADDLE_LANG:-en}
+      SCRIBEPROOF_PADDLE_GPU: ${SCRIBEPROOF_PADDLE_GPU:-false}
+      SCRIBEPROOF_PRINT_OCR_PRIMARY: ${SCRIBEPROOF_PRINT_OCR_PRIMARY:-true}
+      SCRIBEPROOF_QWEN_ENABLED: ${SCRIBEPROOF_QWEN_ENABLED:-false}
+      SCRIBEPROOF_QWEN_API_KEY: ${SCRIBEPROOF_QWEN_API_KEY:-}
+      SCRIBEPROOF_QWEN_ENDPOINT: ${SCRIBEPROOF_QWEN_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}
+      SCRIBEPROOF_QWEN_MODEL: ${SCRIBEPROOF_QWEN_MODEL:-qwen/qwen3-vl-8b-instruct}
       SCRIBEPROOF_VERIFIER_ENABLED: ${SCRIBEPROOF_VERIFIER_ENABLED:-false}
+      SCRIBEPROOF_VERIFIER_PROVIDER: ${SCRIBEPROOF_VERIFIER_PROVIDER:-auto}
       SCRIBEPROOF_VERIFIER_API_KEY: ${SCRIBEPROOF_VERIFIER_API_KEY:-}
+      SCRIBEPROOF_VERIFIER_ENDPOINT: ${SCRIBEPROOF_VERIFIER_ENDPOINT:-https://api.openai.com/v1/chat/completions}
+      SCRIBEPROOF_VERIFIER_MODEL: ${SCRIBEPROOF_VERIFIER_MODEL:-gpt-4o-mini}
       SCRIBEPROOF_CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://frontend:3000
       HF_HOME: /data/hf_cache
       TRANSFORMERS_CACHE: /data/hf_cache
@@ -27,7 +42,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 45s
+      start_period: 90s
 
   frontend:
     build:

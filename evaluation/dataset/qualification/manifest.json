@@ -1,0 +1,8 @@
+{
+  "name": "scribeproof_qualification_v0",
+  "description": "EMPTY — qualification set requires >=15 real hard pages (target 30). Synthetic cases are forbidden. Do not mix with dev/.",
+  "split": "qualification",
+  "min_real_pages": 15,
+  "target_real_pages": 30,
+  "cases": []
+}

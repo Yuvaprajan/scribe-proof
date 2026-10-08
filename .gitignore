@@ -9,7 +9,16 @@ __pycache__/
 venv/
 .env
 .env.local
+.env.*.local
+*.pem
+secrets/
 backend/data/
+evaluation/reports/*.json
+# Keep markdown reports optional; ignore large blobs
+evaluation/dataset/**/images/*.jpg
+evaluation/dataset/**/images/*.jpeg
+evaluation/dataset/**/images/*.tif
+evaluation/dataset/**/images/*.tiff
 *.db
 .DS_Store
 .idea/

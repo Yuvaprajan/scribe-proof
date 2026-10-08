@@ -417,17 +417,24 @@ class DocumentProcessor:
                     paddle_text = line.metadata.get("paddle_text") or ""
                     paddle_score = line.metadata.get("paddle_score")
                     script_mode = (line.metadata.get("script_mode") or "handwriting").lower()
+                    routing_uncertain = bool(line.metadata.get("routing_uncertain"))
                     # Resolve region type for this line
                     line_region_type = RegionType.MAIN_HANDWRITING
                     for r in self.repo.list_regions(page.id):
                         if r.id == line.region_id:
                             line_region_type = r.region_type
                             break
-                    if line_region_type == RegionType.PRINTED_TEXT:
-                        script_mode = "print"
-                    elif line_region_type == RegionType.TABLE:
-                        script_mode = "print"
+                    # Region type is advisory when routing is uncertain / mixed
+                    if not routing_uncertain and script_mode != "mixed":
+                        if line_region_type == RegionType.PRINTED_TEXT:
+                            script_mode = "print"
+                        elif line_region_type == RegionType.TABLE:
+                            script_mode = "print"
+                    if script_mode == "mixed" or routing_uncertain:
+                        script_mode = "mixed"
                     print_mode = script_mode == "print"
+                    htr_blocked = bool(line.metadata.get("htr_blocked"))
+                    strike_uncertain = bool(line.metadata.get("strike_uncertain"))
                     self._stage(
                         job_id,
                         document_id,
@@ -436,11 +443,72 @@ class DocumentProcessor:
                         + 0.35
                         + 0.4 * (line_idx / max(len(lines_entities), 1)),
                         (
-                            f"Print OCR line {line_idx + 1}/{len(lines_entities)}"
-                            if print_mode
-                            else f"TrOCR line {line_idx + 1}/{len(lines_entities)}"
+                            f"Blocked/review line {line_idx + 1}/{len(lines_entities)}"
+                            if htr_blocked
+                            else (
+                                f"Print OCR line {line_idx + 1}/{len(lines_entities)}"
+                                if print_mode
+                                else f"TrOCR line {line_idx + 1}/{len(lines_entities)}"
+                            )
                         ),
                     )
+
+                    if htr_blocked and not print_mode:
+                        fusion = self.engine.fuse(
+                            [],
+                            is_crossed_out=False,
+                            image_quality_risk=quality_risk,
+                            htr_blocked=True,
+                            script_mode=script_mode,
+                            region_type=line_region_type.value,
+                        )
+                        we = WordEvidence(
+                            line_id=line.id,
+                            page_id=page.id,
+                            document_id=document_id,
+                            selected_hypothesis_id=None,
+                            text=fusion.text,
+                            decision_state=fusion.state,
+                            confidence=fusion.confidence,
+                            uncertainty=fusion.uncertainty,
+                            final_score=fusion.final_score,
+                            alternatives=fusion.alternatives,
+                            evidence_ids=[],
+                            crop_artifact_id=line.crop_artifact_ids.get("clahe")
+                            or line.crop_artifact_ids.get("raw"),
+                            decision_reason=fusion.reason,
+                            is_high_risk_entity=fusion.is_high_risk,
+                            reading_order=line.reading_order,
+                            bbox=line.bbox,
+                            region_type=line_region_type,
+                            score_breakdown={
+                                "htr_blocked": 1.0,
+                                "final_score": 0.0,
+                                "uncertainty": 1.0,
+                                "confidence_is_calibrated": 0.0,
+                            },
+                        )
+                        self.repo.save_word_evidence(we)
+                        self.repo.save_decision(
+                            Decision(
+                                word_evidence_id=we.id,
+                                state=fusion.state,
+                                confidence=fusion.confidence,
+                                uncertainty=fusion.uncertainty,
+                                reason=fusion.reason,
+                                thresholds_used=self.engine.thresholds.as_numeric_dict(),
+                                score_breakdown=we.score_breakdown,
+                            )
+                        )
+                        self.repo.save_review_task(
+                            ReviewTask(
+                                document_id=document_id,
+                                word_evidence_id=we.id,
+                                priority=2,
+                            )
+                        )
+                        all_words.append(we)
+                        continue
 
                     def _run_variants(variant_names: tuple[str, ...], *, fast: bool) -> None:
                         nonlocal all_hyps, evidence_ids
@@ -584,13 +652,26 @@ class DocumentProcessor:
                         )
                     ranked_hyps = rerank.hypotheses or all_hyps
 
-                    # Phase 6: optional verifier for low-confidence / high-risk
+                    # Phase 6: optional verifier — selection is APPLIED to candidate pool
                     verifier_agreement = 0.0
                     verifier_disagreement = 0.0
+                    verifier_selected_index: int | None = None
+                    verifier_reject_all = False
+                    candidate_before_verifier = (
+                        ranked_hyps[0].text if ranked_hyps else None
+                    )
+                    selection_applied = False
+                    selection_rejected_reason: str | None = None
                     prelim_visual = (
                         max((h.visual_score for h in ranked_hyps), default=0.0)
                     )
-                    if prelim_visual < 0.55 and ranked_hyps:
+                    # Also verify when routing uncertain or mid confidence
+                    should_verify = ranked_hyps and (
+                        prelim_visual < 0.60
+                        or script_mode == "mixed"
+                        or bool(line.metadata.get("routing_uncertain"))
+                    )
+                    if should_verify:
                         crop_id = line.crop_artifact_ids.get("clahe") or line.crop_artifact_ids.get(
                             "raw"
                         )
@@ -600,9 +681,19 @@ class DocumentProcessor:
                                 crop_img = self.imaging.load_from_bytes(
                                     self.store.read_bytes(crop_art)
                                 )
-                                vres = self.verifier.verify(
-                                    crop_img, [h.text for h in ranked_hyps[:5]]
-                                )
+                                cand_texts = [h.text for h in ranked_hyps[:5] if h.text]
+                                vres = self.verifier.verify(crop_img, cand_texts)
+                                raw_idx = vres.selected_candidate_index
+                                # Reject free-form / out-of-pool hallucination
+                                if (
+                                    vres.enabled
+                                    and raw_idx is not None
+                                    and not (0 <= int(raw_idx) < len(cand_texts))
+                                ):
+                                    selection_rejected_reason = (
+                                        "invalid_selected_candidate_index"
+                                    )
+                                    raw_idx = None
                                 self.repo.save_audit(
                                     AuditEvent(
                                         document_id=document_id,
@@ -613,16 +704,41 @@ class DocumentProcessor:
                                             "reason": vres.reason,
                                             "selected_candidate_index": vres.selected_candidate_index,
                                             "enabled": vres.enabled,
+                                            "candidates": cand_texts,
+                                            "candidate_before_verifier": candidate_before_verifier,
+                                            "selection_rejected_reason": selection_rejected_reason,
                                         },
                                     )
                                 )
                                 if vres.enabled and vres.status == "supported":
                                     verifier_agreement = 1.0
+                                    if raw_idx is not None:
+                                        idx = int(raw_idx)
+                                        if 0 <= idx < len(cand_texts):
+                                            chosen_text = cand_texts[idx]
+                                            for j, h in enumerate(ranked_hyps):
+                                                if h.text == chosen_text:
+                                                    verifier_selected_index = j
+                                                    selection_applied = True
+                                                    break
+                                            if not selection_applied:
+                                                selection_rejected_reason = (
+                                                    "selected_text_not_in_ranked_hyps"
+                                                )
+                                        else:
+                                            selection_rejected_reason = (
+                                                "invalid_selected_candidate_index"
+                                            )
                                 elif vres.enabled and vres.status in {
                                     "illegible",
                                     "disagreement",
                                 }:
                                     verifier_disagreement = 1.0
+                                    verifier_reject_all = vres.status == "illegible"
+                                elif not vres.enabled:
+                                    selection_rejected_reason = (
+                                        selection_rejected_reason or "verifier_unavailable"
+                                    )
 
                     fusion = self.engine.fuse(
                         ranked_hyps,
@@ -633,7 +749,16 @@ class DocumentProcessor:
                         verifier_disagreement=verifier_disagreement,
                         script_mode=script_mode,
                         region_type=line_region_type.value,
+                        verifier_selected_index=verifier_selected_index,
+                        verifier_reject_all=verifier_reject_all,
+                        htr_blocked=False,
+                        routing_uncertain=bool(
+                            line.metadata.get("routing_uncertain")
+                            or script_mode == "mixed"
+                        ),
+                        strike_uncertain=strike_uncertain,
                     )
+                    candidate_after_verifier = fusion.text
 
                     region_type = line_region_type
 
@@ -659,6 +784,10 @@ class DocumentProcessor:
                         bbox=line.bbox,
                         region_type=region_type,
                         score_breakdown={
+                            "model_score": fusion.breakdown.model_score,
+                            "visual_evidence_score": fusion.breakdown.visual_evidence_score,
+                            "agreement_score": fusion.breakdown.agreement_score,
+                            "uncertainty_score": fusion.breakdown.uncertainty_score,
                             "normalized_visual_score": fusion.breakdown.normalized_visual_score,
                             "variant_agreement": fusion.breakdown.variant_agreement,
                             "character_stability": fusion.breakdown.character_stability,
@@ -670,6 +799,23 @@ class DocumentProcessor:
                             "verifier_disagreement": fusion.breakdown.verifier_disagreement,
                             "final_score": fusion.breakdown.final_score,
                             "uncertainty": fusion.breakdown.uncertainty,
+                            "calibrated_confidence": fusion.breakdown.calibrated_confidence,
+                            "confidence_is_calibrated": fusion.breakdown.confidence_is_calibrated,
+                            "decision_status": fusion.state.value,
+                            "verifier_selected_index": float(
+                                verifier_selected_index
+                                if verifier_selected_index is not None
+                                else -1
+                            ),
+                            "candidate_before_verifier": candidate_before_verifier,
+                            "verifier_selected_candidate_index": (
+                                float(verifier_selected_index)
+                                if verifier_selected_index is not None
+                                else -1.0
+                            ),
+                            "candidate_after_verifier": candidate_after_verifier,
+                            "selection_applied": 1.0 if selection_applied else 0.0,
+                            "selection_rejected_reason": selection_rejected_reason or "",
                         },
                     )
                     self.repo.save_word_evidence(we)

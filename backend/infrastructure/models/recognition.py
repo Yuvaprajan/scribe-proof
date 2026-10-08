@@ -60,10 +60,22 @@ class RecognitionProvider(ABC):
         }
 
 
-def prepare_trocr_image(image: np.ndarray) -> np.ndarray:
-    """Handwriting-oriented crop prep for TrOCR."""
+def prepare_trocr_image(image: np.ndarray, *, skip_validation: bool = False) -> np.ndarray:
+    """Handwriting-oriented crop prep for TrOCR.
+
+    Must only be called on validated line crops. Page-sized / multi-line
+    crops are rejected by validate_trocr_crop unless skip_validation=True
+    (tests only).
+    """
     if image is None or image.size == 0:
         return np.full((64, 256, 3), 255, dtype=np.uint8)
+
+    if not skip_validation:
+        from infrastructure.models.bbox_validation import validate_trocr_crop
+
+        vr = validate_trocr_crop(image)
+        if vr.reject_for_htr or not vr.ok:
+            raise ValueError(f"trocr_input_rejected:{vr.reason}")
 
     if len(image.shape) == 2:
         gray = image
@@ -255,7 +267,31 @@ class TrOCRRecognitionProvider(RecognitionProvider):
         import torch
         from PIL import Image
 
-        rgb = prepare_trocr_image(image)
+        try:
+            rgb = prepare_trocr_image(image)
+        except ValueError as e:
+            logger.warning("TrOCR skipped invalid crop: %s", e)
+            return [
+                Hypothesis(
+                    recognition_run_id=run_id,
+                    text="",
+                    normalized_text="",
+                    rank=1,
+                    sequence_score=-100.0,
+                    visual_score=0.0,
+                    model_name=self.MODEL_NAME,
+                    model_version=self.MODEL_VERSION,
+                    source_crop_id=source_crop_id,
+                    image_variant=image_variant,
+                    configuration={
+                        "error": str(e),
+                        "family": "trocr",
+                        "htr_blocked": True,
+                        **TROCR_BEAM_CONFIG,
+                    },
+                )
+            ]
+
         pil = Image.fromarray(rgb.astype(np.uint8))
         pixel_values = self._processor(images=pil, return_tensors="pt").pixel_values
         pixel_values = pixel_values.to(

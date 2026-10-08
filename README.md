@@ -155,15 +155,28 @@ Check readiness: `GET http://localhost:8000/api/models/status`
 - **Decision engine:** deterministic fusion (no LLM rewrite)
 - If TrOCR weights are still downloading, Paddle recognition continues so the playground stays functional
 
-## Evaluation
+## Evaluation (HNX26EPS04)
 
 ```bash
-# After API is up and sample exists:
-python backend/evaluation/metrics.py samples/eval_case.json --api http://localhost:8000 --out eval_out.json
-python backend/evaluation/run_ablation.py --case samples/eval_case.json --api http://localhost:8000 --out ablation_report.md
+# Scaffold held-out dirs + placeholder image (replace with real hard HW pages)
+python scripts/build_eval_scaffold.py
+
+# Same-input baselines: Paddle-only, TrOCR-lines, full ScribeProof
+cd backend
+python -m evaluation.run_baseline --dataset ../evaluation/dataset/held_out --api http://localhost:8000
+
+# Ablation A–F (real metrics including false-confident-error)
+python -m evaluation.run_ablation --dataset ../evaluation/dataset/held_out --api http://localhost:8000
 ```
 
-Reports CER, WER, accepted-only CER/WER, coverage, selective risk, and an A–E ablation table.
+Reports CER, WER, exact match, **FCE**, review/abstention rates, coverage, selective risk.
+
+**Do not claim qualification** until `held_out/` contains 15–30 real difficult pages and ScribeProof beats baselines on FCE/CER.
+
+```bash
+# Unit tests (from backend/)
+python -m pytest evaluation/test_bbox_validation.py evaluation/test_decision_and_verifier.py evaluation/test_crossed_out.py evaluation/test_decision_engine.py -q
+```
 
 ## Limitations (hackathon scope)
 

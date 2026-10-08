@@ -1,0 +1,86 @@
+{
+  "name": "scribeproof_dev_v1",
+  "description": "Development / synthetic cases for debugging only. NEVER used for qualification or challenge claims.",
+  "split": "dev",
+  "cases": [
+    {
+      "id": "messy_rx_sample",
+      "image": "images/messy_rx_sample.png",
+      "image_path": "images/messy_rx_sample.png",
+      "ground_truth": "Patient: Jordan Miles\nRx: Amoxicillin 500mg\ntid x 7 days take with food\nAllergy: NKDA Date: 08/10/26\nNotes: follow up if fever persists",
+      "ground_truth_lines": [
+        "Patient: Jordan Miles",
+        "Rx: Amoxicillin 500mg",
+        "tid x 7 days take with food",
+        "Allergy: NKDA Date: 08/10/26",
+        "Notes: follow up if fever persists"
+      ],
+      "source": "synthetic_opencv_cursive",
+      "is_synthetic": true,
+      "difficulty": "medium",
+      "script": "latin_cursive_sim",
+      "tags": ["medical", "cursive", "crossed_out", "form"],
+      "difficulty_tags": ["medical", "cursive", "crossed_out", "form"],
+      "notes": "DEV ONLY — simulated cursive Rx."
+    },
+    {
+      "id": "messy_note",
+      "image": "images/messy_note.png",
+      "image_path": "images/messy_note.png",
+      "ground_truth": "Patient notes 12/03/2026\nDose 500 mg twice daily\nFollow up with Dr. Rao\nBP 120/80 stable\nmargin: urgent",
+      "ground_truth_lines": [
+        "Patient notes 12/03/2026",
+        "Dose 500 mg twice daily",
+        "Follow up with Dr. Rao",
+        "BP 120/80 stable",
+        "margin: urgent"
+      ],
+      "source": "synthetic_script_font",
+      "is_synthetic": true,
+      "difficulty": "medium",
+      "script": "latin_print_sim",
+      "tags": ["medical", "margin_notes", "cursive"],
+      "difficulty_tags": ["medical", "margin_notes", "cursive"]
+    },
+    {
+      "id": "placeholder_messy_note",
+      "image": "images/placeholder_messy_note.png",
+      "image_path": "images/placeholder_messy_note.png",
+      "ground_truth": "Patient notes 12/03/2026\nDose 500 mg twice daily\nFollow up with Dr. Rao\nBP 120/80 stable\nmargin: urgent",
+      "ground_truth_lines": [
+        "Patient notes 12/03/2026",
+        "Dose 500 mg twice daily",
+        "Follow up with Dr. Rao",
+        "BP 120/80 stable",
+        "margin: urgent"
+      ],
+      "source": "placeholder",
+      "is_synthetic": true,
+      "difficulty": "easy",
+      "script": "latin",
+      "tags": ["medical", "margin_notes", "placeholder"],
+      "difficulty_tags": ["medical", "margin_notes"]
+    },
+    {
+      "id": "printed_report_sample",
+      "image": "images/printed_report_sample.png",
+      "image_path": "images/printed_report_sample.png",
+      "ground_truth": "MEDICAL REPORT\nPatient Name: Jordan Miles\nDate of Birth: 12/04/1988\nDiagnosis: Acute bronchitis\nPrescription: Amoxicillin 500 mg\nInstructions: Take twice daily with food\nPhysician: Dr. Elena Park, MD",
+      "ground_truth_lines": [
+        "MEDICAL REPORT",
+        "Patient Name: Jordan Miles",
+        "Date of Birth: 12/04/1988",
+        "Diagnosis: Acute bronchitis",
+        "Prescription: Amoxicillin 500 mg",
+        "Instructions: Take twice daily with food",
+        "Physician: Dr. Elena Park, MD"
+      ],
+      "source": "synthetic_print_control",
+      "is_synthetic": true,
+      "difficulty": "easy",
+      "script": "latin_print",
+      "tags": ["form", "mixed_print_hw"],
+      "difficulty_tags": ["form", "mixed_print_hw"]
+    }
+  ]
+}

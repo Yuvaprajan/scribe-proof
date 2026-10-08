@@ -12,6 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SCRIBEPROOF_WARMUP_MODELS=true \
     SCRIBEPROOF_TROCR_MODEL=microsoft/trocr-large-handwritten \
     SCRIBEPROOF_VERIFIER_ENABLED=false \
+    SCRIBEPROOF_QWEN_ENABLED=false \
     HF_HOME=/data/hf_cache \
     TRANSFORMERS_CACHE=/data/hf_cache \
     PYTHONPATH=/app
@@ -27,10 +28,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.txt requirements-optional.txt ./
 RUN pip install --upgrade pip && \
     pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu && \
-    pip install -r requirements.txt
+    pip install -r requirements.txt && \
+    (pip install paddlepaddle==3.0.0 && \
+     pip install paddleocr==2.9.1 --no-deps && \
+     pip install shapely pyclipper lmdb fire albumentations==1.4.10 albucore==0.0.13 imgaug \
+     || echo "WARN: PaddleOCR optional install failed — OpenCV detector fallback will be used")
 
 COPY . .
 
@@ -38,7 +43,7 @@ RUN mkdir -p /data/db /data/artifacts /data/hf_cache
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=8 \
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=8 \
   CMD curl -fsS http://localhost:8000/health || exit 1
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -273,17 +273,32 @@ def get_result(document_id: str):
     ]
     crossed = [w for w in words if w.decision_state == DecisionState.CROSSED_OUT]
     active_text = "\n".join(w.text for w in active)
-    md_lines = ["# ScribeProof Transcription", ""]
+    md_lines = ["# ScribeProof Transcription", "", "## Body", ""]
+    margin_lines: list[str] = []
     for w in words:
         state = w.decision_state.value
+        rtype = w.region_type.value if w.region_type else ""
+        prefix = ""
+        if rtype == "margin_note":
+            prefix = "[margin] "
         if state == "CROSSED_OUT":
-            md_lines.append(f"~~{w.text}~~ <!-- crossed-out uncertainty={w.uncertainty:.2f} -->")
+            line = f"~~{prefix}{w.text}~~ <!-- crossed-out uncertainty={w.uncertainty:.2f} -->"
         elif state == "ILLEGIBLE":
-            md_lines.append(f"**[ILLEGIBLE]** <!-- uncertainty={w.uncertainty:.2f} -->")
+            line = f"**[ILLEGIBLE]** <!-- uncertainty={w.uncertainty:.2f} region={rtype} -->"
         elif state == "REVIEW_REQUIRED":
-            md_lines.append(f"=={w.text}== <!-- review conf={w.confidence:.2f} -->")
+            line = (
+                f"=={prefix}{w.text}== <!-- review evidence_score={w.confidence:.2f} "
+                f"(uncalibrated) unc={w.uncertainty:.2f} -->"
+            )
         else:
-            md_lines.append(w.text)
+            line = f"{prefix}{w.text}"
+        if rtype == "margin_note":
+            margin_lines.append(line)
+        else:
+            md_lines.append(line)
+    if margin_lines:
+        md_lines.extend(["", "## Margin notes", ""])
+        md_lines.extend(margin_lines)
     markdown = "\n".join(md_lines)
 
     meta = doc.metadata or {}

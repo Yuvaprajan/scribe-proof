@@ -360,16 +360,43 @@ def build_understanding_from_env() -> DocumentUnderstandingProvider:
     return DisabledUnderstanding()
 
 
+def _hint_iou_containment(
+    bbox: Any, bbox_norm: list[float], page_w: int, page_h: int
+) -> float:
+    """Approximate IoU between pixel bbox and normalized hint box."""
+    x0, y0, x1, y1 = bbox_norm
+    hx0, hy0 = x0 * page_w, y0 * page_h
+    hx1, hy1 = x1 * page_w, y1 * page_h
+    bx0, by0 = bbox.x, bbox.y
+    bx1, by1 = bbox.x + bbox.width, bbox.y + bbox.height
+    ix0, iy0 = max(hx0, bx0), max(hy0, by0)
+    ix1, iy1 = min(hx1, bx1), min(hy1, by1)
+    iw, ih = max(0.0, ix1 - ix0), max(0.0, iy1 - iy0)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    a1 = max(1.0, (hx1 - hx0) * (hy1 - hy0))
+    a2 = max(1.0, bbox.width * bbox.height)
+    return float(inter / (a1 + a2 - inter))
+
+
 def apply_layout_hints_to_lines(
     lines: list[Any],
     understanding: DocumentUnderstanding,
     page_w: int,
     page_h: int,
 ) -> None:
-    """Stamp DetectedLine.region_type from Qwen layout bbox hints when they overlap."""
+    """Advisory layout hints — NEVER blindly override strong handwriting evidence.
+
+    Qwen may suggest region types; pixel script_mode + geometry win on conflict.
+    Ambiguous cases get script_mode=mixed / routing_uncertain.
+    """
+    min_iou = float(os.getenv("SCRIBEPROOF_QWEN_LAYOUT_MIN_IOU", "0.25"))
+    max_hint_area = float(os.getenv("SCRIBEPROOF_QWEN_LAYOUT_MAX_AREA", "0.35"))
     hints = [h for h in understanding.layout_regions if h.bbox_norm]
+
     if not hints:
-        # Document-level bias: mostly print category → boost printed_text for high paddle scores
+        # Soft category bias only when paddle already high-confidence print
         printish = understanding.category in {
             DocumentCategory.FORM,
             DocumentCategory.LETTER,
@@ -381,36 +408,81 @@ def apply_layout_hints_to_lines(
         for line in lines:
             paddle_score = float(getattr(line, "paddle_score", 0) or 0)
             meta = getattr(line, "metadata", {}) or {}
-            if printish and paddle_score >= 0.75 and meta.get("script_mode") != "handwriting":
+            script = meta.get("script_mode") or "handwriting"
+            irreg = float(meta.get("stroke_irregularity") or 0.5)
+            if (
+                printish
+                and paddle_score >= 0.90
+                and script == "print"
+                and irreg < 0.22
+            ):
                 if line.region_type in {
                     RegionType.MAIN_HANDWRITING,
                     RegionType.UNKNOWN,
                 }:
                     line.region_type = RegionType.PRINTED_TEXT
-                    meta["layout_source"] = "qwen_category_bias"
+                    meta["layout_source"] = "qwen_category_advisory"
                     line.metadata = meta
+            elif printish and script == "handwriting":
+                meta["layout_hint"] = "category_printish_ignored_hw"
+                line.metadata = meta
         return
 
     for line in lines:
-        bbox = line.bbox
-        cx = (bbox.x + bbox.width / 2) / max(page_w, 1)
-        cy = (bbox.y + bbox.height / 2) / max(page_h, 1)
+        if line.region_type == RegionType.CROSSED_OUT_CANDIDATE:
+            continue
+        meta = getattr(line, "metadata", {}) or {}
+        script = (meta.get("script_mode") or "handwriting").lower()
+        irreg = float(meta.get("stroke_irregularity") or 0.5)
+        paddle_score = float(getattr(line, "paddle_score", 0) or 0)
+        strong_hw = script == "handwriting" and (irreg > 0.28 or paddle_score < 0.75)
+        strong_print = script == "print" and paddle_score >= 0.88 and irreg < 0.22
+
         best = None
-        best_area = 1e9
+        best_iou = 0.0
         for h in hints:
-            x0, y0, x1, y1 = h.bbox_norm  # type: ignore[misc]
-            if x0 <= cx <= x1 and y0 <= cy <= y1:
-                area = max(1e-6, (x1 - x0) * (y1 - y0))
-                if area < best_area:
-                    best_area = area
-                    best = h
-        if best and best.region_type not in {
-            RegionType.CROSSED_OUT_CANDIDATE,
-        }:
-            # Don't override crossed-out
-            if line.region_type != RegionType.CROSSED_OUT_CANDIDATE:
-                line.region_type = best.region_type
-                meta = getattr(line, "metadata", {}) or {}
-                meta["layout_source"] = "qwen_bbox"
-                meta["layout_description"] = best.description
-                line.metadata = meta
+            if not h.bbox_norm or len(h.bbox_norm) != 4:
+                continue
+            x0, y0, x1, y1 = h.bbox_norm
+            hint_area = max(1e-6, (x1 - x0) * (y1 - y0))
+            if hint_area > max_hint_area:
+                # Huge layout boxes are advisory-only metadata
+                meta["layout_hint_ignored"] = "hint_area_too_large"
+                continue
+            iou = _hint_iou_containment(line.bbox, h.bbox_norm, page_w, page_h)
+            if iou > best_iou:
+                best_iou = iou
+                best = h
+
+        if not best or best_iou < min_iou:
+            meta["layout_source"] = "none"
+            line.metadata = meta
+            continue
+
+        meta["layout_description"] = best.description
+        meta["layout_iou"] = best_iou
+        suggested = best.region_type
+
+        if suggested == RegionType.PRINTED_TEXT and strong_hw:
+            meta["script_mode"] = "mixed"
+            meta["routing_uncertain"] = True
+            meta["layout_source"] = "qwen_bbox_advisory_conflict"
+            # Keep handwriting-primary region
+            if line.region_type == RegionType.UNKNOWN:
+                line.region_type = RegionType.MAIN_HANDWRITING
+        elif suggested in {RegionType.TABLE, RegionType.PRINTED_TEXT} and strong_print:
+            line.region_type = suggested
+            meta["layout_source"] = "qwen_bbox_advisory_agree"
+        elif suggested in {RegionType.MARGIN_NOTE, RegionType.SIGNATURE}:
+            # Geometric types from VLM are ok if IoU strong and not contradicting
+            line.region_type = suggested
+            meta["layout_source"] = "qwen_bbox_advisory_geom"
+        elif suggested == RegionType.MAIN_HANDWRITING and not strong_print:
+            line.region_type = RegionType.MAIN_HANDWRITING
+            meta["layout_source"] = "qwen_bbox_advisory_hw"
+        else:
+            meta["layout_source"] = "qwen_bbox_advisory_unused"
+            if not strong_print and not strong_hw:
+                meta["script_mode"] = "mixed"
+                meta["routing_uncertain"] = True
+        line.metadata = meta

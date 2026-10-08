@@ -141,6 +141,19 @@ class HttpVlmVerifier(VerifierProvider):
                     raw=parsed,
                     enabled=True,
                 )
+            # Reject free-form hallucination if model invents a transcription
+            invented = parsed.get("text") or parsed.get("transcription")
+            if invented is not None:
+                invented_n = " ".join(str(invented).strip().lower().split())
+                pool = {" ".join(h.strip().lower().split()) for h in hypotheses}
+                if invented_n and invented_n not in pool:
+                    return VerificationResult(
+                        selected_candidate_index=None,
+                        status="disagreement",
+                        reason="Verifier invented unsupported transcription; ignored.",
+                        raw=parsed,
+                        enabled=True,
+                    )
             return VerificationResult(
                 selected_candidate_index=idx,
                 status="supported",

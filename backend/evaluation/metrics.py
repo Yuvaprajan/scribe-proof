@@ -1,4 +1,4 @@
-"""CER, WER, selective risk, and ablation helpers (Phase 8)."""
+"""CER, WER, selective risk, FCE, and evaluation helpers."""
 
 from __future__ import annotations
 
@@ -9,6 +9,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 from rapidfuzz.distance import Levenshtein
+
+# Re-export HNX26EPS04 metrics
+from evaluation.fce_metrics import (  # noqa: E402
+    AggregateEval,
+    evaluate_word_list,
+    exact_match,
+    line_correct,
+    risk_coverage_curve,
+)
 
 
 def cer(reference: str, hypothesis: str) -> float:

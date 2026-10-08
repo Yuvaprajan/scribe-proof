@@ -18,6 +18,7 @@ python-Levenshtein==0.26.1
 rapidfuzz==3.10.1
 orjson==3.10.12
 aiofiles==24.1.0
+pytest==8.3.4
 # Install torch BEFORE paddle on Windows to avoid DLL conflicts.
 # CUDA (recommended if you have an NVIDIA GPU):
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124

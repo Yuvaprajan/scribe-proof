@@ -99,8 +99,14 @@ class ContextReranker:
         terms = domain_terms if domain_terms is not None else DEFAULT_DOMAIN_TERMS
         self.domain_terms = sorted(set(t.lower() for t in list(terms) + env_terms))
         self.units = {"mg", "ml", "g", "kg", "mcg", "iu", "mm", "cm", "%"}
-        # Max normalized token edit distance to allow lexicon swap
-        self.max_token_dist = float(os.getenv("SCRIBEPROOF_LEXICON_MAX_DIST", "0.34"))
+        # Conservative: only near-exact token repairs (was 0.34 — too loose)
+        self.max_token_dist = float(os.getenv("SCRIBEPROOF_LEXICON_MAX_DIST", "0.18"))
+        self.min_fuzz_score = int(os.getenv("SCRIBEPROOF_LEXICON_MIN_FUZZ", "88"))
+        self.allow_lexicon = os.getenv("SCRIBEPROOF_LEXICON_ENABLED", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
 
     def _format_only(self, text: str) -> tuple[str, Optional[str]]:
         """Return (possibly reformatted text, edit_type) without inventing content."""
@@ -143,8 +149,8 @@ class ContextReranker:
         return t, None
 
     def _lexicon_repair_tokens(self, text: str) -> tuple[str, list[dict[str, str]]]:
-        """Fuzzy-fix tokens that are already close to domain lexicon entries."""
-        if not text or not self.domain_terms:
+        """Near-exact lexicon repairs only — never invent distant medical terms."""
+        if not text or not self.domain_terms or not self.allow_lexicon:
             return text, []
         parts = re.findall(r"[A-Za-z0-9]+|[^A-Za-z0-9]+", text)
         edits: list[dict[str, str]] = []
@@ -155,8 +161,6 @@ class ContextReranker:
                 continue
             low = part.lower()
             if low in self.domain_terms or low in ABBREV:
-                canon = ABBREV.get(low, part)
-                # Preserve all-caps / title from lexicon abbreviations
                 if low in ABBREV:
                     out.append(ABBREV[low])
                     if ABBREV[low] != part:
@@ -164,21 +168,29 @@ class ContextReranker:
                 else:
                     out.append(part)
                 continue
+            # Single-char edits / very high fuzz only
             match = process.extractOne(
                 low,
                 self.domain_terms,
                 scorer=fuzz.ratio,
-                score_cutoff=int((1.0 - self.max_token_dist) * 100),
+                score_cutoff=self.min_fuzz_score,
             )
             if not match:
                 out.append(part)
                 continue
             term, score, _ = match
             dist = Levenshtein.normalized_distance(low, term)
-            if dist > self.max_token_dist or score < 66:
+            # Reject if more than 1 char change on short tokens
+            if len(low) <= 4 and dist > 0.0 and low != term:
+                # Allow only exact abbrev path above
                 out.append(part)
                 continue
-            # Preserve capitalization style
+            if dist > self.max_token_dist or score < self.min_fuzz_score:
+                out.append(part)
+                continue
+            if abs(len(low) - len(term)) > 1:
+                out.append(part)
+                continue
             if part.isupper():
                 replacement = term.upper()
             elif part[0].isupper():
@@ -191,8 +203,10 @@ class ContextReranker:
                     {
                         "from": part,
                         "to": replacement,
-                        "type": "lexicon_fuzzy",
+                        "type": "lexicon_near_exact",
                         "score": str(score),
+                        "edit_distance": str(dist),
+                        "source": "domain_lexicon",
                     }
                 )
         return "".join(out), edits
@@ -256,7 +270,7 @@ class ContextReranker:
         if not hypotheses:
             return RerankResult(hypotheses=[], selected=None, context_score=0.0)
 
-        # Expand with safe repairs derived from TrOCR hypotheses only
+        # Prefer selection among existing OCR candidates; only add format/near-exact repairs
         expanded: list[Hypothesis] = list(hypotheses)
         for h in hypotheses:
             if not h.text or not is_trocr_hyp(h):
@@ -264,13 +278,20 @@ class ContextReranker:
             formatted, edit_type = self._format_only(h.text)
             repaired, lex_edits = self._lexicon_repair_tokens(formatted)
             if repaired != h.text:
+                # Must remain very close to the source OCR string
+                if Levenshtein.normalized_distance(
+                    normalize_candidate(repaired), h.normalized_text or ""
+                ) > self.max_token_dist + 0.05:
+                    continue
                 note = {
                     "format_edit": edit_type,
                     "lexicon_edits": lex_edits,
                     "source_hypothesis_id": h.id,
+                    "original_candidate": h.text,
+                    "corrected_candidate": repaired,
+                    "reason": "safe_normalization_or_near_exact_lexicon",
                 }
-                # Small boost only when lexicon actually helped
-                boost = 0.04 if lex_edits else 0.01
+                boost = 0.02 if lex_edits else 0.01
                 expanded.append(self._clone_hyp(h, repaired, visual_boost=boost, note=note))
 
         scored: list[tuple[float, Hypothesis, Optional[dict[str, Any]]]] = []
@@ -287,6 +308,9 @@ class ContextReranker:
                         "to": formatted,
                         "edit_type": edit_type,
                         "source_hypothesis_id": h.id,
+                        "original_candidate": h.text,
+                        "corrected_candidate": formatted,
+                        "reason": "deterministic_format",
                     },
                 )
                 edit = {
@@ -302,12 +326,13 @@ class ContextReranker:
                 )
                 for o in hypotheses
             )
-            # Reject free invention: repaired text must stay near some OCR candidate
-            if min_dist > 0.45:
+            # Reject free invention: must match an OCR candidate closely
+            if min_dist > 0.22:
                 continue
 
             lang = self._language_plausibility(work.text)
             domain = self._domain_score(work.text)
+            # Domain knowledge may boost ranking among existing candidates only (small weight)
             disagreement = 0.0
             texts = {normalize_candidate(x.text) for x in hypotheses if x.text}
             if len(texts) > 3:
@@ -316,10 +341,10 @@ class ContextReranker:
             trocr_bonus = 0.08 if is_trocr_hyp(work) else -0.2
             score = (
                 work.visual_score
-                + 0.18 * lang
-                + 0.16 * domain
+                + 0.12 * lang
+                + 0.08 * domain
                 + trocr_bonus
-                - 0.35 * min_dist
+                - 0.45 * min_dist
                 - disagreement
             )
             scored.append((score, work, edit))
