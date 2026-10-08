@@ -1,0 +1,47 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      SCRIBEPROOF_DATA_DIR: /data
+      SCRIBEPROOF_ARTIFACT_ROOT: /data/artifacts
+      SCRIBEPROOF_DATABASE_URL: sqlite:////data/db/scribeproof.db
+      SCRIBEPROOF_OCR_MODE: ${SCRIBEPROOF_OCR_MODE:-trocr}
+      SCRIBEPROOF_ALLOW_MOCK_FALLBACK: ${SCRIBEPROOF_ALLOW_MOCK_FALLBACK:-false}
+      SCRIBEPROOF_USE_PADDLE: ${SCRIBEPROOF_USE_PADDLE:-true}
+      SCRIBEPROOF_WARMUP_MODELS: ${SCRIBEPROOF_WARMUP_MODELS:-true}
+      SCRIBEPROOF_TROCR_MODEL: ${SCRIBEPROOF_TROCR_MODEL:-microsoft/trocr-large-handwritten}
+      SCRIBEPROOF_LINE_VARIANTS: ${SCRIBEPROOF_LINE_VARIANTS:-raw,clahe,adaptive_binarized,denoised}
+      SCRIBEPROOF_VERIFIER_ENABLED: ${SCRIBEPROOF_VERIFIER_ENABLED:-false}
+      SCRIBEPROOF_VERIFIER_API_KEY: ${SCRIBEPROOF_VERIFIER_API_KEY:-}
+      SCRIBEPROOF_CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://frontend:3000
+      HF_HOME: /data/hf_cache
+      TRANSFORMERS_CACHE: /data/hf_cache
+    volumes:
+      - scribeproof_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  scribeproof_data:

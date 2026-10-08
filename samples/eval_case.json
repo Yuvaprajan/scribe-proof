@@ -1,0 +1,5 @@
+{
+  "image_path": "samples/messy_note.png",
+  "ground_truth": "Patient notes 12/03/2026\nDose 500 mg twice daily\nFollow up with Dr. Rao\nBP 120/80 stable\nmargin: urgent",
+  "document_id": null
+}

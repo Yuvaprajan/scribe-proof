@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f7f9fc;
+  --surface: #ffffff;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --brand: #0891b2;
+  --brand-strong: #0e7490;
+  --accept: #059669;
+  --review: #d97706;
+  --illegible: #dc2626;
+  --crossed: #64748b;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  color: var(--ink);
+  background: var(--bg);
+}
+
+::selection {
+  background: rgba(8, 145, 178, 0.2);
+}
+
+.shell-dotgrid {
+  background-image: radial-gradient(rgba(15, 23, 42, 0.06) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.surface {
+  @apply rounded-xl border border-slateink-200 bg-white shadow-soft;
+}
+
+.toolbar-btn {
+  @apply rounded-lg px-3 py-1.5 text-sm font-medium text-slateink-600 transition hover:bg-slateink-100 hover:text-slateink-900;
+}
+
+.toolbar-btn-active {
+  @apply bg-slateink-900 text-white hover:bg-slateink-800 hover:text-white;
+}
+
+.confidence-bar {
+  @apply h-1.5 overflow-hidden rounded-full bg-slateink-100;
+}
+
+.word-chip {
+  @apply inline-block cursor-pointer rounded px-1.5 py-0.5 transition;
+}
+
+.word-chip:hover {
+  outline: 1px solid rgba(15, 23, 42, 0.15);
+}
+
+.shimmer-bg {
+  background: linear-gradient(
+    90deg,
+    #eef2f7 0%,
+    #f8fafc 40%,
+    #eef2f7 80%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
